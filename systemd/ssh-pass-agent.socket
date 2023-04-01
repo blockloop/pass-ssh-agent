@@ -1,0 +1,9 @@
+[Unit]
+Description=SSH Agent Socket for backing pass store
+
+[Socket]
+ListenStream=%t/ssh-pass-agent.sock
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

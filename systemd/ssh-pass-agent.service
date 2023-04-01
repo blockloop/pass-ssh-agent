@@ -1,0 +1,11 @@
+[Unit]
+Description=SSH Agent that uses pass as a backing store
+Requires=ssh-pass-agent.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %h/.config/ssh-pass-agent.py %t/ssh-pass-agent.sock
+Restart=on-failure
+
+[Install]
+Also=ssh-pass-agent.socket
