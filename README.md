@@ -4,6 +4,8 @@
 
 That includes this README (except for this part), the entirety of `agent.py`, and the systemd files.
 
+The purpose of this agent is to provide `ssh` with ssh keys from [passwordstore](https://www.passwordstore.org/) without having to place the keys on the cclient. 
+
 I have been actively using this agent on my personal and work machines since it was created. I would like to add support for more key types eventually and move the key configuration to a yaml file, but I haven't had the urge to do so since it's working perfectly fine.
 
 Below this line is the original README written by ChatGPT. I wrote the systemd section.
