@@ -1,80 +1,99 @@
+import io
 import os
 import socket
 import struct
+import subprocess
 import sys
-from paramiko.message import Message
+
 from paramiko.agent import Agent
 from paramiko.ed25519key import Ed25519Key
+from paramiko.message import Message
 from paramiko.ssh_exception import SSHException
-import subprocess
-import io
 
-class CustomSSHAgent(Agent):
-    AGENTC_REQUEST_IDENTITIES = bytes([11])
-    AGENTC_SIGN_REQUEST = bytes([13])
-    AGENT_IDENTITIES_ANSWER = bytes([12])
-    AGENT_SIGN_RESPONSE = bytes([14])
+import config
 
-    def __init__(self, keys):
-        self.keys = []
+
+class SSHKey:
+    type: str
+    key_path: str
+    pass_key: str
+    store_location: str
+
+
+AGENTC_REQUEST_IDENTITIES = bytes([11])
+AGENTC_SIGN_REQUEST = bytes([13])
+AGENT_IDENTITIES_ANSWER = bytes([12])
+AGENT_SIGN_RESPONSE = bytes([14])
+SSH_AGENT_FAILURE = bytes([5])
+
+
+def load_keys(keys: list[SSHKey]) -> list[Ed25519Key]:
+    ed25519_keys = []
+    for key in keys:
+        try:
+            if key.type.lower() == "ed25519":
+                passphrase = get_passphrase(key.pass_key, key.store_location)
+                private_key_str = get_private_key(key.key_path)
+                private_key_file = io.StringIO(private_key_str)
+                ed25519_keys.append(
+                    Ed25519Key.from_private_key(private_key_file, password=passphrase)
+                )
+        except SSHException as e:
+            print(f"Error loading key from {key.key_path}: {e}")
+    return ed25519_keys
+
+
+def get_passphrase(pass_key: str, store_location: str) -> str | None:
+    env = os.environ.copy()
+    env["PASSWORD_STORE_DIR"] = store_location
+
+    result = subprocess.run(["pass", pass_key], capture_output=True, text=True, env=env)
+    if result.returncode != 0:
+        print(f"Error retrieving passphrase for key {pass_key}: {result.stderr}")
+        return None
+    return result.stdout.strip()
+
+
+def get_private_key(key_path: str) -> str | None:
+    result = subprocess.run(["pass", key_path], capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"Error retrieving private key for key_path {key_path}: {result.stderr}")
+        return None
+    return result.stdout.strip()
+
+
+def handle_message(msg: bytes, keys: list[Ed25519Key]) -> bytes:
+    m = Message(msg)
+    cmd = m.get_byte()
+
+    if cmd == AGENTC_REQUEST_IDENTITIES:
+        resp = Message()
+        resp.add_byte(AGENT_IDENTITIES_ANSWER)
+        resp.add_int(len(keys))
         for key in keys:
-            try:
-                if key["type"].lower() == "ed25519":
-                    passphrase = self.get_passphrase(key["pass_key"], key["store_location"])
-                    private_key_str = self.get_private_key(key["key_path"])
-                    private_key_file = io.StringIO(private_key_str)
-                    self.keys.append(Ed25519Key.from_private_key(private_key_file, password=passphrase))
-            except SSHException as e:
-                print(f"Error loading key from {key['key_path']}: {e}")
+            resp.add_string(key.asbytes())
+            resp.add_string(f"{key.get_name()} key loaded from {key}")
+        return resp.asbytes()
 
-    def get_passphrase(self, pass_key, store_location):
-        env = os.environ.copy()
-        env['PASSWORD_STORE_DIR'] = store_location
+    if cmd == AGENTC_SIGN_REQUEST:
+        key_blob = m.get_string()
+        data = m.get_string()
+        flags = m.get_int()
 
-        result = subprocess.run(['pass', pass_key], capture_output=True, text=True, env=env)
-        if result.returncode != 0:
-            print(f"Error retrieving passphrase for key {pass_key}: {result.stderr}")
-            return None
-        return result.stdout.strip()
+        resp = Message()
+        resp.add_byte(AGENT_SIGN_RESPONSE)
+        for key in keys:
+            if key_blob == key.asbytes():
+                sig = key.sign_ssh_data(data)
+                resp.add_string(sig)
+                return resp.asbytes()
 
-    def get_private_key(self, key_path):
-        result = subprocess.run(['pass', key_path], capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"Error retrieving private key for key_path {key_path}: {result.stderr}")
-            return None
-        return result.stdout.strip()
+    failure_response = Message()
+    failure_response.add_byte(SSH_AGENT_FAILURE)
+    return failure_response.asbytes()
 
-    def handle_message(self, msg):
-        m = Message(msg)
-        cmd = m.get_byte()
 
-        if cmd == CustomSSHAgent.AGENTC_REQUEST_IDENTITIES:
-            resp = Message()
-            resp.add_byte(CustomSSHAgent.AGENT_IDENTITIES_ANSWER)
-            resp.add_int(len(self.keys))
-            for key in self.keys:
-                resp.add_string(key.asbytes())
-                resp.add_string(f"{key.get_name()} key loaded from {key}")
-            return resp.asbytes()
-
-        if cmd == CustomSSHAgent.AGENTC_SIGN_REQUEST:
-            key_blob = m.get_string()
-            data = m.get_string()
-            flags = m.get_int()
-
-            resp = Message()
-            resp.add_byte(CustomSSHAgent.AGENT_SIGN_RESPONSE)
-            for key in self.keys:
-                if key_blob == key.asbytes():
-                    sig = key.sign_ssh_data(data)
-                    resp.add_string(sig)
-                    return resp.asbytes()
-
-        failure_response = Message()
-        failure_response.add_byte(bytes([255]))  # Custom failure code, converted to bytes
-        return failure_response.asbytes()
-
-def handle_client(agent, conn, addr):
+def handle_client(keys: list[Ed25519Key], conn: socket.socket, addr: str):
     try:
         while True:
             msg = conn.recv(4)
@@ -82,23 +101,15 @@ def handle_client(agent, conn, addr):
                 break
             msg_len = struct.unpack(">I", msg)[0]
             msg = conn.recv(msg_len)
-            response = agent.handle_message(msg)
+            response = handle_message(msg, keys)
             conn.send(struct.pack(">I", len(response)) + response)
     finally:
         conn.close()
 
 
-KEYS = [
-    {
-        "type": "ed25519",
-        "key_path": "your-key-path",
-        "pass_key": "your-pass-key",
-        "store_location": "/path/to/your/store"
-    }
-]
-
 if __name__ == "__main__":
-    agent = CustomSSHAgent(KEYS)
+    ssh_keys = list(SSHKey(**key) for key in config.KEYS)
+    keys = load_keys(ssh_keys)
 
     if len(sys.argv) != 2:
         print(f"Usage: {sys.argv[0]} <socket_path>")
@@ -118,7 +129,7 @@ if __name__ == "__main__":
 
         while True:
             conn, addr = sock.accept()
-            handle_client(agent, conn, addr)
+            handle_client(keys, conn, addr)
     finally:
         sock.close()
         os.unlink(socket_path)
