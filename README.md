@@ -18,11 +18,12 @@ This script provides an implementation of a custom SSH agent that retrieves priv
 
 - Python 3.6 or higher
 - [Paramiko](https://www.paramiko.org/) library
+- Cryptography
 
-To install Paramiko, run:
+To install, run:
 
 ```bash
-pip install paramiko
+pip install paramiko cryptogragphy
 ```
 
 ## Usage
@@ -97,11 +98,19 @@ Now, your SSH client will use the custom SSH agent for authentication.
 ## Make it automatic with systemd
 
 ```bash
+# setup the virtualenv
+mkdir -p ~/.ssh-pass-agent
+cd ~/.ssh-pass-agent
+python -m virtualenv .venv
+source .venv/bin/activate
+pip install paramiko cryptography
+deactivate
+
 # copy the agent to your local bin dir
-cp agent.py $HOME/.local/bin/ssh-pass-agent.py
+cp agent.py ~/.ssh-pass-agent/agent.py
 
 # IMPORANT !!
-# make sure you modify the KEY variable in $HOME/.local/bin/ssh-pass-agent.py to 
+# make sure you modify the KEY variable in ~/.ssh-pass-agent/agent.py to 
 # reflect your pass key information
 
 # copy the files to systemd's config location
